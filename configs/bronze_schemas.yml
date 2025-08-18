@@ -1,0 +1,105 @@
+# Bronze layer schemas for IPL Cricsheet JSON (match-level and ball-level)
+version: 1
+
+schemas:
+
+  matches:
+    description: One row per match with minimal normalization from JSON info.*
+    columns:
+      # Deterministic keys
+      - { name: match_id,            type: string,  nullable: false }
+
+      # Common match attributes
+      - { name: season,              type: integer, nullable: true }
+      - { name: competition,         type: string,  nullable: true }
+      - { name: match_type,          type: string,  nullable: true }     # e.g., T20
+      - { name: gender,              type: string,  nullable: true }
+      - { name: venue,               type: string,  nullable: true }
+      - { name: city,                type: string,  nullable: true }
+
+      # Dates (keep string in Bronze; normalize to date/timestamp in Silver)
+      - { name: match_start_date,    type: string,  nullable: true }
+      - { name: match_end_date,      type: string,  nullable: true }
+
+      # Teams
+      - { name: team1,               type: string,  nullable: true }
+      - { name: team2,               type: string,  nullable: true }
+
+      # Toss & result
+      - { name: toss_winner,         type: string,  nullable: true }
+      - { name: toss_decision,       type: string,  nullable: true }      # bat/field
+      - { name: winner,              type: string,  nullable: true }
+      - { name: result,              type: string,  nullable: true }      # e.g., runs/wickets/tie/no result
+      - { name: result_margin,       type: integer, nullable: true }      # runs/wickets margin if present
+      - { name: player_of_match,     type: string,  nullable: true }
+
+      # Officials
+      - { name: officials,           type: array,   items: string, nullable: true }   # umpires, referee (names)
+
+      # Lineage / traceability
+      - { name: src_file_path,       type: string,  nullable: false }
+      - { name: src_file_name,       type: string,  nullable: false }
+      - { name: src_ingest_ts,       type: timestamp, nullable: false }
+      - { name: src_record_hash,     type: string,  nullable: false }
+
+  deliveries:
+    description: One row per ball delivery with minimal normalization.
+    columns:
+      # Deterministic keys
+      - { name: delivery_id,         type: string,  nullable: false }
+      - { name: match_id,            type: string,  nullable: false }
+
+      # Partition key
+      - { name: season,              type: integer, nullable: true }
+
+      # Innings / over / ball
+      - { name: inning_no,           type: integer, nullable: true }
+      - { name: over_no,             type: integer, nullable: true }
+      - { name: ball_in_over,        type: integer, nullable: true }
+
+      # Players (Bronze keeps raw names; Silver will map to stable IDs)
+      - { name: striker,             type: string,  nullable: true }
+      - { name: non_striker,         type: string,  nullable: true }
+      - { name: bowler,              type: string,  nullable: true }
+      - { name: batting_team,        type: string,  nullable: true }
+      - { name: bowling_team,        type: string,  nullable: true }
+
+      # Runs (totals & breakdown)
+      - { name: runs_batter,         type: integer, nullable: true }
+      - { name: runs_extras,         type: integer, nullable: true }
+      - { name: runs_total,          type: integer, nullable: true }
+
+      - { name: extra_byes,          type: integer, nullable: true }
+      - { name: extra_legbyes,       type: integer, nullable: true }
+      - { name: extra_wides,         type: integer, nullable: true }
+      - { name: extra_noballs,       type: integer, nullable: true }
+      - { name: extra_penalty,       type: integer, nullable: true }
+
+      # Wicket info
+      - { name: wicket_fell,         type: boolean, nullable: true }
+      - { name: wicket_player_out,   type: string,  nullable: true }
+      - { name: wicket_kind,         type: string,  nullable: true }
+      - { name: wicket_fielders,     type: array,   items: string, nullable: true }
+
+      # Lineage / traceability
+      - { name: src_file_path,       type: string,  nullable: false }
+      - { name: src_file_name,       type: string,  nullable: false }
+      - { name: src_ingest_ts,       type: timestamp, nullable: false }
+      - { name: src_record_hash,     type: string,  nullable: false }
+
+  innings:
+    description: Optional: inning-level summary for quick checks.
+    columns:
+      - { name: match_id,            type: string,  nullable: false }
+      - { name: season,              type: integer, nullable: true }
+      - { name: inning_no,           type: integer, nullable: true }
+      - { name: batting_team,        type: string,  nullable: true }
+      - { name: runs_total,          type: integer, nullable: true }
+      - { name: wickets,             type: integer, nullable: true }
+      - { name: overs,               type: double,  nullable: true }
+
+      # Lineage / traceability
+      - { name: src_file_path,       type: string,  nullable: false }
+      - { name: src_file_name,       type: string,  nullable: false }
+      - { name: src_ingest_ts,       type: timestamp, nullable: false }
+      - { name: src_record_hash,     type: string,  nullable: false }

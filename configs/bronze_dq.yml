@@ -1,0 +1,54 @@
+version: 1
+
+checks:
+  matches:
+    required_fields:
+      - match_id
+      - season
+      - team1
+      - team2
+    non_empty_fields:
+      - team1
+      - team2
+    allowed_values:
+      # leave open; we’ll validate more in Silver when we standardize enums
+      toss_decision: ["bat", "field"]
+    ranges:
+      season:
+        min: 2008
+        max: 2100
+    custom_rules:
+      - name: winner_in_teams_when_result_known
+        description: If result is not null and not "no result/tie", winner must equal team1 or team2.
+        severity: warn
+
+  deliveries:
+    required_fields:
+      - delivery_id
+      - match_id
+      - over_no
+      - ball_in_over
+      - runs_total
+    ranges:
+      over_no: { min: 1, max: 50 } # wide upper bound; T20 <= 20
+      ball_in_over: { min: 1, max: 10 } # handle wides/no-balls expanding an over
+      runs_batter: { min: 0, max: 7 }
+      runs_extras: { min: 0, max: 7 }
+      runs_total: { min: 0, max: 10 }
+    logical:
+      - name: total_equals_batter_plus_extras
+        description: runs_total == runs_batter + runs_extras (nulls treated as 0)
+        severity: error
+      - name: wicket_fields_consistency
+        description: if wicket_fell == true then wicket_kind != null
+        severity: warn
+
+  # job-level sanity checks
+  job:
+    file_to_row_expectations:
+      description: Compare number of source files read vs. distinct src_file_name in output.
+      severity: warn
+    quarantine_threshold:
+      description: Fail job if > 2% records end up in quarantine.
+      percent: 2
+      severity: error

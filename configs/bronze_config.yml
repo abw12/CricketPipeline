@@ -1,0 +1,56 @@
+version: 1
+
+source:
+  name: cricsheet_ipl
+  raw_path: "data/raw/ipl"
+  file_glob: "*.json"
+  # If some Cricsheet files are very large or multiline, Spark's JSON reader handles them.
+  read_options:
+    # leave empty for now; we’ll set options in code if needed
+    multiline: true
+
+storage:
+  base_path: "data/processed/bronze"
+  format: parquet # replace with "delta" later if you add Delta Lake
+  coalesce_partitions: false
+
+tables:
+  matches:
+    target_path: "data/processed/bronze/matches"
+    partition_columns: ["season"]
+  deliveries:
+    target_path: "data/processed/bronze/deliveries"
+    partition_columns: ["season"]
+  innings: # optional; nice for summaries/quick checks
+    target_path: "data/processed/bronze/innings"
+    partition_columns: ["season"]
+
+lineage_columns:
+  - src_file_path
+  - src_file_name
+  - src_ingest_ts
+  - src_record_hash
+
+ids:
+  # We’ll implement these rules in Step 3 (code). Documenting here keeps it reproducible.
+  match_id_rule: |
+    Prefer Cricsheet’s inherent match identifiers if available (e.g., info.match_type_number + competition + season).
+    Otherwise compute: match_id = sha1(lower(trim(date)) + "|" + team1 + "|" + team2 + "|" + venue)[0:16]
+  delivery_id_rule: |
+    delivery_id = f"{match_id}-{inning_no:02d}-{over_no:02d}-{ball_in_over:02d}"
+
+incremental_ingest:
+  manifest_path: "data/raw/_manifest/ipl_files.csv"
+  manifest_columns: ["file_name", "file_size", "modified_time", "ingested_ts"]
+  detection_keys: ["file_name", "file_size", "modified_time"] # treat changed size/mtime as changed file
+  continue_on_error: true
+
+quarantine:
+  bad_records_table_path: "data/processed/bronze/_quarantine/bad_records"
+  error_log_path: "logs/bronze_errors"
+  on_malformed_json: "quarantine" # options: quarantine | fail
+  on_bad_record: "quarantine" # options: quarantine | drop | fail
+
+logging:
+  app_log_path: "logs/bronze_run"
+  log_level: "INFO"
