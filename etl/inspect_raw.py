@@ -14,7 +14,7 @@ def main():
 
     # List a handful of files to speed up inspection.
     raw_path = root / raw_dir
-    files = sorted(Path(raw_path).glob(file_glob))[:10] # read first 10
+    files = sorted(Path(raw_path).glob(file_glob))[:3] # read first 10
     if not files:
         raise FileNotFoundError(f"No JSON files found under {raw_path} with glob {file_glob}")
     
@@ -84,6 +84,55 @@ def main():
     print("\n=== SANITY: approximate deliveries in these sample files ===")
     print(f"Sample files: {len(files)}")
     print(f"Approx deliveries rows (not fully flattened yet): {df_deliveries.count()}")
+
+    # Print the first over’s first two deliveries fields (batter, bowler, non_striker, runs, extras, wickets)
+    first_over = (
+        df_ex
+        .filter(F.col("overs_pos") == 0)  # first over in each match
+        .orderBy("src_file_path")        # deterministic pick
+        .limit(1)                        # just one row to read clearly
+    )
+
+    # Shortcuts to the first two deliveries within the 'deliveries' array
+    d1 = F.col("deliveries")[0]  # first ball
+    d2 = F.col("deliveries")[1]  # second ball
+
+    # Select nested fields from the first two balls
+    out = (
+        first_over.select(
+            "src_file_path",
+            "team_batting",
+            "overs_pos",
+
+            # --- Delivery 1 (first ball) ---
+            d1.getField("batter").alias("d1_striker"),
+            d1.getField("bowler").alias("d1_bowler"),
+            d1.getField("non_striker").alias("d1_non_striker"),
+            d1.getField("runs").getField("batter").alias("d1_runs_batter"),
+            d1.getField("runs").getField("extras").alias("d1_runs_extras"),
+            d1.getField("runs").getField("total").alias("d1_runs_total"),
+            # extras struct may be partially missing; coalesce to 0 for readability
+            F.coalesce(d1.getField("extras").getField("wides"), F.lit(0)).alias("d1_extra_wides"),
+            F.coalesce(d1.getField("extras").getField("noballs"), F.lit(0)).alias("d1_extra_noballs"),
+            # wickets is an array (could be empty); element_at is NULL‑safe
+            F.element_at(d1.getField("wickets"), 1).getField("player_out").alias("d1_player_out"),
+            F.element_at(d1.getField("wickets"), 1).getField("kind").alias("d1_wicket_kind"),
+
+            # --- Delivery 2 (second ball) ---
+            d2.getField("batter").alias("d2_striker"),
+            d2.getField("bowler").alias("d2_bowler"),
+            d2.getField("non_striker").alias("d2_non_striker"),
+            d2.getField("runs").getField("batter").alias("d2_runs_batter"),
+            d2.getField("runs").getField("extras").alias("d2_runs_extras"),
+            d2.getField("runs").getField("total").alias("d2_runs_total"),
+            F.coalesce(d2.getField("extras").getField("wides"), F.lit(0)).alias("d2_extra_wides"),
+            F.coalesce(d2.getField("extras").getField("noballs"), F.lit(0)).alias("d2_extra_noballs"),
+            F.element_at(d2.getField("wickets"), 1).getField("player_out").alias("d2_player_out"),
+            F.element_at(d2.getField("wickets"), 1).getField("kind").alias("d2_wicket_kind"),
+        )
+    )
+
+    out.show(truncate=False)
 
     spark.stop()
 
