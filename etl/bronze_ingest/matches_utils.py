@@ -53,8 +53,8 @@ def add_lineage(df: DataFrame, src_path_col: str="src_file_path") -> DataFrame:
     df1 = df.withColumn("src_file_name", F.element_at(F.split(F.col(src_path_col), r"[\\/]+"),-1))
     df2 = df1.withColumn("src_ingest_ts",F.current_timestamp())
     # Hash: use a JSON string of info.* to form a deterministic content hash
-    # (Null-safe: coalesce to empty JSON when missing)
-    json_blob = F.to_json(F.coalesce(F.col("info_struct"),F.lit(F.create_map())))
+    # Convert to_json first and then handle null with coalesce to empty json string
+    json_blob = F.coalesce(F.to_json(F.col("info_struct")), F.lit("{}"))
     df3 = df2.withColumn("src_record_hash",udf_sha1_16(json_blob))
     return df3
 

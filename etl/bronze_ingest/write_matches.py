@@ -5,11 +5,12 @@ import os
 # Add parent directory to Python path to allow module imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pyspark.sql import functions as F
+from h11 import Data
+from pyspark.sql import functions as F, DataFrame
 from etl.common import get_spark, load_yml, project_root
 from etl.bronze_ingest.matches_utils import compute_match_id_expr, add_lineage
 
-def select_match_fields(df_raw):
+def select_match_fields(df_raw:DataFrame) -> DataFrame: 
     """
     Flatten the top-level 'info' struct into our matches columns (Bronze schema).
     Keep strings for dates in Bronze; we'll normalize later in Silver.
@@ -85,6 +86,29 @@ def select_match_fields(df_raw):
     )
     return ordered
 
+def write_matches(df_matches:DataFrame, cfg, root_path):
+    target_path = cfg["tables"]["matches"]["target_path"]  # e.g., data/processed/bronze/matches
+    full_path = root_path / target_path
+    
+    # Ensure output directory exists
+    from etl.bronze_ingest.matches_utils import ensure_dir
+    ensure_dir(str(full_path))
+
+    # partition by season as per config
+    parts  = cfg["tables"]["matches"]["partition_columns"]
+    mode = "overwrite" # for first run; later you can switch to 'append' with dynamic overwrites
+
+    (
+        df_matches
+        .repartition(1,"season") # small local runs: 1 file per season partition (tweak later)
+        .write
+        .mode(mode)
+        .partitionBy(*parts)
+        .format(cfg["storage"]["format"])
+        .save(str(full_path))
+    )
+    return full_path
+
 def main(sample_only:bool = True):
     root = project_root()
     cfg = load_yml(str(root / "configs" / "bronze_config.yml"))
@@ -118,7 +142,23 @@ def main(sample_only:bool = True):
     print("\n=== matches schema ===")
     df_matches.printSchema()
 
+    # After preview, write full dataset:
+    if not sample_only:
+        out_dir = write_matches(df_matches, cfg, root)
+        print(f"\n✓ Wrote bronze.matches to: {out_dir}")
+
+        # Quick read-back validation (schema + simple count)
+        df_back = (
+            spark.read
+            .format(cfg["storage"]["format"])
+            .load(str(out_dir))
+        )
+        print("\n=== read-back schema ===")
+        df_back.printSchema()
+        print(f"rows: {df_back.count()}")
+
+
     spark.stop()
 
 if __name__ == "__main__":
-    main(sample_only=True)
+    main(sample_only=False)
