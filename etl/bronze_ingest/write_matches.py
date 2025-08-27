@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import os
+import time
 
 # Add parent directory to Python path to allow module imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -158,7 +159,12 @@ def main(sample_only:bool = True):
         print(f"rows: {df_back.count()}")
 
 
-    spark.stop()
+    # try:
+    #     time.sleep(600)  # 600 seconds = 10 minutes
+    # except KeyboardInterrupt:
+    #     print("Interrupted by user")
+    # finally:
+        spark.stop()
 
 if __name__ == "__main__":
     main(sample_only=False)
