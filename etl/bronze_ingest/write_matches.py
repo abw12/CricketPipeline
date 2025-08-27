@@ -164,7 +164,7 @@ def main(sample_only:bool = True):
     # except KeyboardInterrupt:
     #     print("Interrupted by user")
     # finally:
-        spark.stop()
+    spark.stop()
 
 if __name__ == "__main__":
     main(sample_only=False)

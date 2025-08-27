@@ -1,5 +1,5 @@
 from pathlib import Path
-from pyspark.sql import functions as F
+from pyspark.sql import functions as F, DataFrame
 import sys
 import os
 
@@ -7,6 +7,30 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from etl.common import get_spark, load_yml, project_root
+from etl.bronze_ingest.deliveries_utils import (
+    compute_match_id_from_columns,
+    compute_delivery_id_expr,
+    add_lineage_from_struct,
+)
+
+def write_deliveries(df:DataFrame, cfg, root_path):
+    target_path= cfg["tables"]["deliveries"]["target_path"] # e.g., data/processed/bronze/deliveries
+    parts= cfg["tables"]["deliveries"]["partition_columns"]
+    mode = "overwrite"
+
+    full_path = root_path / target_path
+
+    (
+        df
+        .repartition(1,"season")  # small local runs; tune later
+        .write
+        .mode(mode)
+        .partitionBy(*parts)
+        .format(cfg["storage"]["format"])
+        .save(str(full_path))
+    )
+
+    return full_path
 
 def main(sample_only:bool=True):
     root = project_root()
@@ -73,33 +97,119 @@ def main(sample_only:bool=True):
         .drop("ball_pos")
     )
     # --- Preview a few deliveries with minimal fields ---
-    out = (
-        df_ex
-        .select(
-            "src_file_path", "season", "venue", "match_start_date",
-            "team1", "team2", "batting_team", "inning_no", "over_no", "ball_in_over",
-            F.col("delivery.batter").alias("batter"),
-            F.col("delivery.non_striker").alias("non_striker"),
-            F.col("delivery.bowler").alias("bowler"),
-            F.col("delivery.runs.total").alias("runs_total")
-        )
-        .orderBy("src_file_path", "inning_no", "over_no", "ball_in_over")
+    # out = (
+    #     df_ex
+    #     .select(
+    #         "src_file_path", "season", "venue", "match_start_date",
+    #         "team1", "team2", "batting_team", "inning_no", "over_no", "ball_in_over",
+    #         F.col("delivery.batter").alias("batter"),
+    #         F.col("delivery.non_striker").alias("non_striker"),
+    #         F.col("delivery.bowler").alias("bowler"),
+    #         F.col("delivery.runs.total").alias("runs_total")
+    #     )
+    #     .orderBy("src_file_path", "inning_no", "over_no", "ball_in_over")
+    # )
+
+    # print("\n=== SAMPLE flattened deliveries (first 20 rows) ===")
+    # out.show(20, truncate=False)
+
+    # --- Compute match_id the same way as matches ---
+    df_w_match = df_ex.withColumn("match_id",compute_match_id_from_columns())
+
+     # --- Derive bowling_team as the "other" team from team1/team2 ---
+    df_w_match = df_w_match.withColumn(
+        "bowling_team",
+        F.when(F.col("batting_team") == F.col("team1"),F.col("team2")).otherwise(F.col("team1"))
     )
 
-    print("\n=== SAMPLE flattened deliveries (first 20 rows) ===")
-    out.show(20, truncate=False)
+    d = F.col("delivery") # shorthand
+
+    # Safe coalesces for extras (null -> 0)
+    def nz(c): return F.coalesce(c.cast("int"),F.lit(0))
+    
+    # Wicket: pick first wicket if present (NULL-safe)
+    w1 = F.element_at(d.getField("wickets"),1)
+
+    shaped = (
+        df_w_match
+        .select(
+            #IDs & partition
+            "match_id",
+            F.col("season").cast("int").alias("season"),
+
+            # Inning/over/ball
+            "inning_no", "over_no", "ball_in_over",
+
+            #Team/Players
+            "batting_team","bowling_team",
+            d.getField("batter").alias("striker"),
+            d.getField("non_striker").alias("non_striker"),
+            d.getField("bowler").alias("bowler"),
+
+            # Runs (totals & breakdown)
+            d.getField("runs").getField("batter").cast("int").alias("runs_batter"),
+            d.getField("runs").getField("extras").cast("int").alias("runs_extras"),
+            d.getField("runs").getField("total").cast("int").alias("runs_total"),
+
+            nz(d.getField("extras").getField("byes")).alias("extra_byes"),
+            nz(d.getField("extras").getField("legbyes")).alias("extra_legbyes"),
+            nz(d.getField("extras").getField("wides")).alias("extra_wides"),
+            nz(d.getField("extras").getField("noballs")).alias("extra_noballs"),
+
+            #Wickets
+            F.when(w1.isNotNull(),F.lit(True)).otherwise(F.lit(False)).alias("wicket_fell"),
+            w1.getField("player_out").alias("wicket_player_out"),
+            w1.getField("kind").alias("wicket_kind"),
+            w1.getField("fielders").alias("wicket_fielders"),
+
+            #lineage seed
+            "src_file_path",
+            d.alias("delivery_struct_for_hash") # will hash this for src_record_hash
+        )
+        # Compute delivery_id
+        .withColumn("delivery_id",compute_delivery_id_expr())   
+    )
+    
+    # Add lineage columns; then drop the temp struct
+    shaped = (
+        add_lineage_from_struct(shaped, "delivery_struct_for_hash")
+        .drop("delivery_struct_for_hash")
+    )
+
+    print("\n=== SAMPLE shaped deliveries (first 20 rows) ===")
+    shaped.orderBy("match_id", "inning_no", "over_no", "ball_in_over").show(20, truncate=False)
+
+    print("\n=== deliveries schema (shaped) ===")
+    shaped.printSchema()
+
+    # Write full dataset when ready
+    if not sample_only:
+        out_dir = write_deliveries(shaped, cfg, root)
+        print(f"\n✓ Wrote bronze.deliveries to: {out_dir}")
+
+        # Read-back sanity
+        df_back = (
+            spark.read
+            .format(cfg["storage"]["format"])
+            .load(str(out_dir))
+        )
+        print("\n=== read-back schema ===")
+        df_back.printSchema()
+        print(f"rows: {df_back.count()}")
+
 
     # Keep the Spark UI alive for inspection
-    try:
-        print("\nSpark UI is available at:", spark.sparkContext.uiWebUrl)
-        print("Keeping SparkContext alive for 5 minutes to allow UI inspection...")
-        import time
-        time.sleep(300)  # 5 minutes
-    except KeyboardInterrupt:
-        print("Interrupted by user, stopping SparkContext...")
-    finally:
-        spark.stop()
-        print("SparkContext stopped.")
+    # try:
+    #     print("\nSpark UI is available at:", spark.sparkContext.uiWebUrl)
+    #     print("Keeping SparkContext alive for 5 minutes to allow UI inspection...")
+    #     import time
+    #     time.sleep(300)  # 5 minutes
+    # except KeyboardInterrupt:
+    #     print("Interrupted by user, stopping SparkContext...")
+    # finally:
+    #     spark.stop()
+    #     print("SparkContext stopped.")
+    spark.stop()
 
 if __name__ == "__main__":
-    main(sample_only=True)
+    main(sample_only=False)

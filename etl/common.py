@@ -34,13 +34,11 @@ def get_spark(app_name: str = "cricket-pipeline") -> SparkSession:
         .config("spark.sql.shuffle.partitions","8")
         .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
         .config("spark.hadoop.io.file.buffer.size", "65536")
-        # Disable Hadoop native libraries to fix Windows compatibility issues
-        .config("spark.hadoop.io.native.lib.available", "false")
         # UI port (use 4040 or another single value you prefer)
         .config("spark.ui.port", "4040")
         # Enable event logging so History Server can show finished apps
-        .config("spark.eventLog.enabled", "true")
-        .config("spark.eventLog.dir", f"file:///{str(event_dir).replace(os.sep, '/')}")
+        # .config("spark.eventLog.enabled", "true")
+        # .config("spark.eventLog.dir", f"file:///{str(event_dir).replace(os.sep, '/')}")
         .getOrCreate()  
     )
     return spark
