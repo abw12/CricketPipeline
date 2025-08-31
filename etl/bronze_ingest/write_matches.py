@@ -57,7 +57,8 @@ def select_match_fields(df_raw:DataFrame) -> DataFrame:
             toss.getField("decision").alias("toss_decision"),
 
             # Outcome normalization: outcome could be {winner, by: {runs|wickets}} or 'result': 'tie/no result'
-            outcome.getField("winner").alias("winner"),
+            outcome.getField("winner").alias("winner"
+                                             ),
             # Compose a simple 'result' string in Bronze (silver can restructure)
             F.when(outcome.getField("by").getField("runs").isNotNull(),F.lit("runs"))
             .when(outcome.getField("by").getField("wickets").isNotNull(),F.lit("wickets"))
