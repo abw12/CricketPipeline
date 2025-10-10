@@ -25,6 +25,7 @@ tables:
     target_path: "data/processed/bronze/innings"
     partition_columns: ["season"]
 
+# used for tracking the data
 lineage_columns:
   - src_file_path
   - src_file_name

@@ -1,0 +1,41 @@
+version: 1
+
+storage:
+  base_path: "data/processed/silver"
+  format: parquet
+  coalesce_partitions: false
+
+tables:
+  matches:
+    source: "data/processed/bronze/matches" # from bronze
+    target: "data/processed/silver/matches"
+    partition_columns: ["season"]
+
+  deliveries:
+    source: "/data/processed/bronze/deliveries" # from bronze
+    target: "/data/processed/silver/deliveries"
+    partition_columns: ["season"]
+
+enums:
+  toss_decision:
+    map:
+      bat: "bat"
+      field: "field"
+      bowl: "field" # sometimes 'bowl' occurs; normalize to 'field'
+  result:
+    map:
+      runs: "runs"
+      wickets: "wickets"
+      tie: "tie"
+      "no result": "no_result"
+      "match tied": "tie"
+
+date_formats:
+  # Cricsheet puts ISO-like strings; keep multiple patterns if needed
+  match_date:
+    - "yyyy-MM-dd"
+    - "yyyy/MM/dd"
+    - "dd-MMM-yyyy" # fallback if some older formats appear
+
+enrichment:
+  compute_batting_order_from_deliveries: true
