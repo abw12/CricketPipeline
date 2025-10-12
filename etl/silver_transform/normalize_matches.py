@@ -24,7 +24,9 @@ def main(write_out:bool = True, sample_only:bool=True):
             some_matches = [r["match_id"] for r in matches_bz.select("match_id").limit(20).collect()]
             deliveries_bz = deliveries_bz.filter(F.col("match_id").isin(some_matches))
             matches_bz = matches_bz.filter(F.col("match_id").isin(some_matches))
-
+            
+            deliveries_bz.printSchema()
+        
         bat_order = (deliveries_bz
                      .groupBy("match_id","inning_no","batting_team")
                      .count()
@@ -93,5 +95,5 @@ def main(write_out:bool = True, sample_only:bool=True):
     spark.stop()
 
 if __name__ == "__main__":
-    main(write_out=True, sample_only=False)  # preview first
+    main(write_out=False, sample_only=True)  # preview first
 
