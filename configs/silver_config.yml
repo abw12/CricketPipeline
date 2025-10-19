@@ -15,6 +15,9 @@ tables:
     source: "/data/processed/bronze/deliveries" # from bronze
     target: "/data/processed/silver/deliveries"
     partition_columns: ["season"]
+  
+  dim_player:
+    target: "data/processed/silver/dim_player"
 
 enums:
   toss_decision:
