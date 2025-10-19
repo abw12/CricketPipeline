@@ -1,0 +1,33 @@
+version: 1
+
+paths:
+  players: "data/external/register/people.csv"
+  player_aliases: "data/external/register/names.csv"
+
+columns:
+  players:
+    id: "identifier" # stable player key
+    name: "name" #canonical display name
+    unique_name: "unique_name" #  # Cricsheet’s normalized name (often unique per person)
+
+    #Optional exetrnal IDs (keep if you want to expose later)
+    id_cricinfo: "key_cricinfo"
+    id_cricbuzz: "key_cricbuzz"
+
+  player_aliases:
+    id: "identifier"
+    alias: "name"
+
+# Name normalization rules used before matching
+name_normalization:
+  lower: true
+  strip: true
+  collapse_spaces: true
+  remove_diacritics: true
+  remove_trailing_commas: true # e.g., "A A Barot," in your sample
+  remove_periods: false # set true if you see issues like "A.B. de Villiers"
+
+matching:
+  players:
+    # Try in this order — any hit returns the player 'identifier'
+    try: ["unique_name", "name", "alias"]
