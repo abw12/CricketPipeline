@@ -15,10 +15,12 @@ tables:
     source: "/data/processed/bronze/deliveries" # from bronze
     target: "/data/processed/silver/deliveries"
     partition_columns: ["season"]
-  
+
   dim_player:
     target: "data/processed/silver/dim_player"
 
+  dim_team:
+    target: "data/processed/silver/dim_team"
 enums:
   toss_decision:
     map:
@@ -42,3 +44,20 @@ date_formats:
 
 enrichment:
   compute_batting_order_from_deliveries: true
+
+team_normalization:
+  lower: true
+  strip: true
+  collapse_spaces: true
+  remove_diacritics: true
+  # Keep punctuation for now; change if you see issues
+  remove_periods: false
+  remove_trailing_commas: true
+
+# Optional: map historic/variant names to a canonical display name
+# (left key = variant as it appears in data; right value = your chosen canonical)
+team_overrides:
+  "Rising Pune Supergiants": "Rising Pune Supergiant"
+  "Delhi Daredevils": "Delhi Capitals"
+  "Kings XI Punjab": "Punjab Kings"
+  # add more if you find variants
