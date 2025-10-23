@@ -1,8 +1,9 @@
+# etl/silver_transform/build_dim_team.py
 from pathlib import Path
 from pyspark.sql import functions as F, types as T
 import hashlib
 
-from etl.common import get_spark, load_yaml, project_root
+from etl.common import get_spark, load_yml, project_root
 from etl.silver_transform.register_resolver import make_normalizer  # reuse the same normalizer factory
 
 def sha1_12(s: str) -> str:
@@ -10,8 +11,8 @@ def sha1_12(s: str) -> str:
 
 def main(write_out: bool = True):
     root = project_root()
-    cfg_silver = load_yaml(str(root / "configs" / "silver_config.yml"))
-    cfg_bronze = load_yaml(str(root / "configs" / "bronze_config.yml"))
+    cfg_silver = load_yml(str(root / "configs" / "silver_config.yml"))
+    cfg_bronze = load_yml(str(root / "configs" / "bronze_config.yml"))
     fmt = cfg_silver["storage"]["format"]
 
     spark = get_spark("silver-build-dim-team")
@@ -21,40 +22,47 @@ def main(write_out: bool = True):
     d_path = root / cfg_silver["tables"]["deliveries"]["target"]
     matches = spark.read.format(fmt).load(str(m_path))
     deliveries = spark.read.format(fmt).load(str(d_path))
-    # Pull all team name columns we see in facts
-    
-    team_cols = [
-        F.col("team1").alias("team"),
-        F.col("team2").alias("team"),
-        F.col("toss_winner").alias("team"),
-        F.col("winner").alias("team"),
-        F.col("first_batting_team").alias("team"),
-        F.col("second_batting_team").alias("team"),
-    ]
 
-    m_teams = matches.select(*team_cols)
+    # ---- helper to select one team column, renamed to 'team' ----
+    def sel_one(df,colname):
+        return df.select(F.col(colname).alias("team")).where(F.col(colname).isNotNull())
 
-    d_teams = deliveries.select(
-        F.col("batting_team").alias("team"),
-        F.col("bowling_team").alias("team"),
+    # From matches
+    m_teams = (
+        sel_one(matches, "team1")
+        .unionByName(sel_one(matches, "team2"))
+        .unionByName(sel_one(matches, "toss_winner"))
+        .unionByName(sel_one(matches, "winner"))
+        .unionByName(sel_one(matches, "first_batting_team"))
+        .unionByName(sel_one(matches, "second_batting_team"))
     )
 
-    raw_teams = m_teams.unionByName(d_teams).filter(F.col("team").isNotNull()).distinct()
+    # From deliveries
+    d_teams = (
+        sel_one(deliveries, "batting_team")
+        .unionByName(sel_one(deliveries, "bowling_team"))
+    )
 
-    # normalization + overrides
+    # All team strings as a single column
+    raw_teams = (
+        m_teams.unionByName(d_teams)
+            .distinct()                     # unique strings only
+    )
+    
+    # Normalization + overrides
     norm_rules = cfg_silver["team_normalization"]
     normalizer = make_normalizer(norm_rules)
     norm_udf = F.udf(lambda s: normalizer(s), T.StringType())
 
     overrides = cfg_silver.get("team_overrides", {}) or {}
     # Normalize override keys & values once (so matching is robust)
-    overrides_norm = { normalizer(k) : overrides[k] for k in overrides}
+    overrides_norm = { normalizer(k): overrides[k] for k in overrides }
     # Also normalize override values to use as canonical keys when generating IDs
-    override_canon_norm = { normalizer(k) : normalizer(v) for k,v in overrides.items()}
+    override_canon_norm = { normalizer(k): normalizer(v) for k,v in overrides.items() }
 
     # Apply normalization
     teams_norm = (raw_teams
-                  .withColumn("team_norm", norm_udf(F.col("team")))
+        .withColumn("team_norm", norm_udf(F.col("team")))
     )
 
     # Apply overrides: if team_norm appears as a key, use override's canonical display name, else original
@@ -64,18 +72,21 @@ def main(write_out: bool = True):
             return overrides_norm[team_norm]
         # else use the original string as canonical display name
         return team
-    
-    choose_canon_udf = F.udf(lambda team, team_norm: choose_canonical(team,team_norm),T.StringType())
+
+    choose_canon_udf = F.udf(lambda team, team_norm: choose_canonical(team, team_norm), T.StringType())
     teams_canon = (teams_norm
-                   .withColumn("name_canonical", choose_canon_udf(F.col("team"),F.col("team_norm")))
-                   .withColumn("name_canonical_norm", norm_udf(F.col("name_canonical")))
-                   )
-    dim =(teams_canon
-          .groupBy("name_canonical","name_canonical_norm")
-          .agg(F.collect_set("team_norm").alias("aliases_norm"))
+        .withColumn("name_canonical", choose_canon_udf(F.col("team"), F.col("team_norm")))
+        .withColumn("name_canonical_norm", norm_udf(F.col("name_canonical")))
     )
+
+    # Gather aliases per canonical
+    dim = (teams_canon
+        .groupBy("name_canonical", "name_canonical_norm")
+        .agg(F.collect_set("team_norm").alias("aliases_norm"))
+    )
+
     # Deterministic team_id from canonical normalized name
-    mk_id = F.udf(lambda s : "team_" + sha1_12(s), T.StringType())
+    mk_id = F.udf(lambda s: "team_" + sha1_12(s), T.StringType())
     dim = dim.withColumn("team_id", mk_id(F.col("name_canonical_norm")))
 
     # Arrange columns
@@ -85,6 +96,7 @@ def main(write_out: bool = True):
         "name_canonical_norm",
         "aliases_norm"
     )
+
     print("\n=== dim_team sample ===")
     dim.orderBy("name_canonical").show(20, truncate=False)
     dim.printSchema()
