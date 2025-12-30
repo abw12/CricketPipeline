@@ -61,3 +61,11 @@ team_overrides:
   "Delhi Daredevils": "Delhi Capitals"
   "Kings XI Punjab": "Punjab Kings"
   # add more if you find variants
+
+gold:
+  base_path: "data/processed/gold"
+  format: parquet
+
+  tables:
+    batter_season: "data/processed/gold/batter_season"
+    bowler_season: "data/processed/gold/bowler_season"
