@@ -1,5 +1,13 @@
 from pyspark.sql import functions as F, types as T
 from pathlib import Path
+
+## if executing the script with the vscode "run as python file" option then uncomment the following lines"
+# import os
+# import sys
+
+# # Add parent directory to Python path to allow module imports
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from etl.common import get_spark, load_yml, project_root
 
 def main(write_out:bool = True, sample_only:bool = True):
