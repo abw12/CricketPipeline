@@ -1,13 +1,6 @@
 # etl/gold/build_bowler_season.py
 from pathlib import Path
 from pyspark.sql import functions as F, types as T, Window
-import sys
-import os
-
-# Add parent directory to Python path to allow module imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-
 from etl.common import get_spark, load_yml, project_root
 from etl.gold.metrics_common import (
     is_legal_for_bowler, runs_conceded_col, is_bowler_wicket,

@@ -45,11 +45,8 @@ def main(write_out:bool = True, sample_only:bool = True):
                 .withColumn("bowler_id", resolve(F.col("bowler")))
                 )
     print("\n=== deliveries with IDs (preview) ===")
-    (enriched
-     .select("match_id","season","inning_no","over_no","ball_in_over",
-             "striker","striker_id","non_striker","non_striker_id","bowler","bowler_id")
-     .orderBy("match_id","inning_no","over_no","ball_in_over")
-     .show(20, truncate=False))
+    enriched.select("match_id","season","inning_no","over_no","ball_in_over",
+             "striker","striker_id","non_striker","non_striker_id","bowler","bowler_id").orderBy("match_id","inning_no","over_no","ball_in_over").show(20, truncate=False)
     
     if write_out and not sample_only:
         # Overwrite Silver deliveries with the new columns (safe; old columns retained)

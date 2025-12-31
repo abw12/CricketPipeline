@@ -12,8 +12,8 @@ tables:
     partition_columns: ["season"]
 
   deliveries:
-    source: "/data/processed/bronze/deliveries" # from bronze
-    target: "/data/processed/silver/deliveries"
+    source: "data/processed/bronze/deliveries" # from bronze
+    target: "data/processed/silver/deliveries"
     partition_columns: ["season"]
 
   dim_player:

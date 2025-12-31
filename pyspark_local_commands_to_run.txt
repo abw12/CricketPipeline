@@ -1,0 +1,7 @@
+
+# run the python module using below command
+python -m etl.silver_transform.enrich_deliveries_players
+
+# export these variables before executing the pyspark script in the vscode
+$env:PYSPARK_DRIVER_PYTHON="$PWD/.venv/Scripts/python.exe"
+$env:PYSPARK_PYTHON="$PWD/.venv/Scripts/python.exe"                                   
