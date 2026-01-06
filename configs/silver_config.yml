@@ -70,3 +70,4 @@ gold:
     batter_season: "data/processed/gold/batter_season"
     bowler_season: "data/processed/gold/bowler_season"
     team_phase_season: "data/processed/gold/team_phase_season"
+    match_summary: "data/processed/gold/match_summary"
