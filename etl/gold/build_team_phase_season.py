@@ -43,9 +43,9 @@ def main(write_out:bool = True,sample_only:bool = True):
            .agg(
                F.sum("runs_total").alias("runs_scored"),
                F.sum("bat_legal").alias("balls_faced"),
-               F.col("four").alias("fours"),
-               F.col("six").alias("sixes"),
-               F.col("wkt_lost").alias("wickets_lost")
+               F.sum("four").alias("fours"),
+               F.sum("six").alias("sixes"),
+               F.sum("wkt_lost").alias("wickets_lost")
            )
            .withColumn("overs_faced", F.col("balls_faced") / F.lit(6.0))
            .withColumn("run_rate", safe_div(F.col("runs_scored") * F.lit(6.0), F.col("balls_faced")))
@@ -105,4 +105,4 @@ def main(write_out:bool = True,sample_only:bool = True):
 
 if __name__ == "__main__":
     # preview first; then write full
-    main(write_out=False, sample_only=True)
+    main(write_out=True, sample_only=False)
