@@ -1,0 +1,1 @@
+"""Dashboard entrypoint package."""
