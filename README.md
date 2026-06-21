@@ -68,6 +68,22 @@ poetry run cricket-pipeline run --step bronze-matches --sample --no-write
 
 On local Windows runs, physical `partitionBy` writes are disabled by default to avoid local Hadoop path/permission issues. The partition columns remain in the data. Set `CRICKET_PIPELINE_FORCE_PARTITIONS=1` to force configured partitioned writes.
 
+## Dashboard
+
+Run the Streamlit dashboard from the project root:
+
+```powershell
+poetry run cricket-dashboard
+```
+
+You can also run Streamlit directly:
+
+```powershell
+poetry run streamlit run dashboard/app/app.py
+```
+
+The dashboard reads processed Parquet files from `data/processed/gold` and selected `data/processed/silver` tables. Run the ETL pipeline first if the processed data is missing or stale.
+
 ## Tests
 
 ```powershell
