@@ -1,116 +1,86 @@
-# etl/silver_transform/build_dim_team.py
-from pathlib import Path
-from pyspark.sql import functions as F, types as T
-import hashlib
+from __future__ import annotations
 
-from etl.common import get_spark, load_yml, project_root
-from etl.silver_transform.register_resolver import make_normalizer  # reuse the same normalizer factory
+from typing import Optional
 
-def sha1_12(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+from pyspark.sql import DataFrame, SparkSession, functions as F
 
-def main(write_out: bool = True):
-    root = project_root()
-    cfg_silver = load_yml(str(root / "configs" / "silver_config.yml"))
-    cfg_bronze = load_yml(str(root / "configs" / "bronze_config.yml"))
-    fmt = cfg_silver["storage"]["format"]
+from etl.common import PipelineContext, read_table, require_spark, show_preview, write_table
+from etl.silver_transform.register_resolver import make_normalizer
 
-    spark = get_spark("silver-build-dim-team")
 
-    # Read Silver matches & deliveries (or Bronze if you prefer; Silver is cleaner)
-    m_path = root / cfg_silver["tables"]["matches"]["target"]
-    d_path = root / cfg_silver["tables"]["deliveries"]["target"]
-    matches = spark.read.format(fmt).load(str(m_path))
-    deliveries = spark.read.format(fmt).load(str(d_path))
+def select_team_column(df: DataFrame, col_name: str) -> DataFrame:
+    return df.select(F.col(col_name).alias("team")).where(F.col(col_name).isNotNull())
 
-    # ---- helper to select one team column, renamed to 'team' ----
-    def sel_one(df,colname):
-        return df.select(F.col(colname).alias("team")).where(F.col(colname).isNotNull())
 
-    # From matches
-    m_teams = (
-        sel_one(matches, "team1")
-        .unionByName(sel_one(matches, "team2"))
-        .unionByName(sel_one(matches, "toss_winner"))
-        .unionByName(sel_one(matches, "winner"))
-        .unionByName(sel_one(matches, "first_batting_team"))
-        .unionByName(sel_one(matches, "second_batting_team"))
+def normalize_team_col(col):
+    normalized = F.lower(F.trim(col))
+    normalized = F.regexp_replace(normalized, r",+$", "")
+    normalized = F.regexp_replace(normalized, r"\s+", " ")
+    return normalized
+
+
+def build_dim_team(matches: DataFrame, deliveries: DataFrame, cfg_silver: dict) -> DataFrame:
+    match_teams = (
+        select_team_column(matches, "team1")
+        .unionByName(select_team_column(matches, "team2"))
+        .unionByName(select_team_column(matches, "toss_winner"))
+        .unionByName(select_team_column(matches, "winner"))
+        .unionByName(select_team_column(matches, "first_batting_team"))
+        .unionByName(select_team_column(matches, "second_batting_team"))
     )
-
-    # From deliveries
-    d_teams = (
-        sel_one(deliveries, "batting_team")
-        .unionByName(sel_one(deliveries, "bowling_team"))
+    delivery_teams = select_team_column(deliveries, "batting_team").unionByName(
+        select_team_column(deliveries, "bowling_team")
     )
+    raw_teams = match_teams.unionByName(delivery_teams).distinct()
 
-    # All team strings as a single column
-    raw_teams = (
-        m_teams.unionByName(d_teams)
-            .distinct()                     # unique strings only
-    )
-    
-    # Normalization + overrides
-    norm_rules = cfg_silver["team_normalization"]
-    normalizer = make_normalizer(norm_rules)
-    norm_udf = F.udf(lambda s: normalizer(s), T.StringType())
+    normalizer = make_normalizer(cfg_silver["team_normalization"])
+    overrides = {normalizer(k): v for k, v in (cfg_silver.get("team_overrides", {}) or {}).items()}
+    override_items = []
+    for key, value in overrides.items():
+        override_items.extend([F.lit(key), F.lit(value)])
+    override_map = F.create_map(*override_items) if override_items else F.create_map()
 
-    overrides = cfg_silver.get("team_overrides", {}) or {}
-    # Normalize override keys & values once (so matching is robust)
-    overrides_norm = { normalizer(k): overrides[k] for k in overrides }
-    # Also normalize override values to use as canonical keys when generating IDs
-    override_canon_norm = { normalizer(k): normalizer(v) for k,v in overrides.items() }
-
-    # Apply normalization
-    teams_norm = (raw_teams
-        .withColumn("team_norm", norm_udf(F.col("team")))
-    )
-
-    # Apply overrides: if team_norm appears as a key, use override's canonical display name, else original
-    def choose_canonical(team: str, team_norm: str) -> str:
-        # If there is an override for this normed key, return the override display name
-        if team_norm in overrides_norm:
-            return overrides_norm[team_norm]
-        # else use the original string as canonical display name
-        return team
-
-    choose_canon_udf = F.udf(lambda team, team_norm: choose_canonical(team, team_norm), T.StringType())
-    teams_canon = (teams_norm
-        .withColumn("name_canonical", choose_canon_udf(F.col("team"), F.col("team_norm")))
-        .withColumn("name_canonical_norm", norm_udf(F.col("name_canonical")))
-    )
-
-    # Gather aliases per canonical
-    dim = (teams_canon
+    return (
+        raw_teams.withColumn("team_norm", normalize_team_col(F.col("team")))
+        .withColumn("name_canonical", F.coalesce(F.element_at(override_map, F.col("team_norm")), F.col("team")))
+        .withColumn("name_canonical_norm", normalize_team_col(F.col("name_canonical")))
         .groupBy("name_canonical", "name_canonical_norm")
         .agg(F.collect_set("team_norm").alias("aliases_norm"))
+        .withColumn("team_id", F.concat(F.lit("team_"), F.substring(F.sha1(F.col("name_canonical_norm")), 1, 12)))
+        .select("team_id", "name_canonical", "name_canonical_norm", "aliases_norm")
     )
 
-    # Deterministic team_id from canonical normalized name
-    mk_id = F.udf(lambda s: "team_" + sha1_12(s), T.StringType())
-    dim = dim.withColumn("team_id", mk_id(F.col("name_canonical_norm")))
 
-    # Arrange columns
-    dim = dim.select(
-        "team_id",
-        "name_canonical",
-        "name_canonical_norm",
-        "aliases_norm"
-    )
+def run(
+    context: Optional[PipelineContext] = None,
+    spark: Optional[SparkSession] = None,
+    sample_only: bool = False,
+    write_out: bool = True,
+    preview: bool = False,
+) -> None:
+    context = context or PipelineContext.load()
+    spark, should_stop = require_spark("silver-build-dim-team", spark)
+    try:
+        matches = read_table(spark, context.silver_table_path("matches"), context.silver_format)
+        deliveries = read_table(spark, context.silver_table_path("deliveries"), context.silver_format)
+        dim = build_dim_team(matches, deliveries, context.silver)
+        if sample_only:
+            dim = dim.limit(100)
+        if preview:
+            show_preview(dim.orderBy("name_canonical"), "dim_team", 20)
+        if write_out:
+            target = write_table(dim, context.silver_table_path("dim_team"), context.silver_format)
+            print(f"Wrote dim_team to: {target}")
+    finally:
+        if should_stop:
+            spark.stop()
 
-    print("\n=== dim_team sample ===")
-    dim.orderBy("name_canonical").show(20, truncate=False)
-    dim.printSchema()
 
-    if write_out:
-        target = root / cfg_silver["tables"]["dim_team"]["target"]
-        (dim
-         .repartition(1)
-         .write.mode("overwrite")
-         .format(cfg_silver["storage"]["format"])
-         .save(str(target)))
-        print(f"\n✓ Wrote dim_team to: {target}")
+def main(write_out: bool = True) -> None:
+    run(write_out=write_out, preview=True)
 
-    spark.stop()
 
 if __name__ == "__main__":
     main(write_out=True)
+
+

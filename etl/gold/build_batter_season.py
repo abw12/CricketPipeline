@@ -1,101 +1,125 @@
-# etl/gold/build_batter_season.py
-from pyspark.sql import functions as F
-import os
-import sys
+from __future__ import annotations
 
-# Add parent directory to Python path to allow module imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from typing import Optional
 
-from etl.common import get_spark, load_yml, project_root
-from etl.gold.metrics_common import (
-    is_legal_for_batter, batting_strike_rate, safe_div
-)
+from pyspark.sql import DataFrame, SparkSession, functions as F
 
-def main(write_out: bool = True, sample_only: bool = True):
-    root = project_root()
-    cfg_silver = load_yml(str(root / "configs" / "silver_config.yml"))
-    fmt = cfg_silver["storage"]["format"]
+from etl.common import PipelineContext, read_table, require_spark, show_preview, write_table
+from etl.gold.metrics_common import batting_strike_rate, is_legal_for_batter, safe_div
 
-    spark = get_spark("gold-batter-season")
 
-    #Read silver deliveries ( must include striker_id etc.)
-    d_path = root / cfg_silver["tables"]["deliveries"]["target"]
-    d = spark.read.format(fmt).load(str(d_path))
+def build_batter_season(deliveries: DataFrame, dim_player: Optional[DataFrame] = None) -> DataFrame:
+    appearances = (
+        deliveries.where(F.col("striker_id").isNotNull())
+        .select("season", "match_id", "inning_no", "striker_id")
+        .distinct()
+    )
+    innings_batted = appearances.groupBy("season", "striker_id").agg(
+        F.countDistinct("match_id", "inning_no").alias("innings_batted")
+    )
+    matches_played = appearances.groupBy("season", "striker_id").agg(
+        F.countDistinct("match_id").alias("matches_played")
+    )
 
-    if sample_only:
-        some_players = [r["striker_id"] for r in d.select("striker_id").where(F.col("striker_id").isNotNull()).distinct().limit(50).collect()]
-        d = d.where(F.col("striker_id").isin(some_players))
-    
-    # Appearances by batter
-    appears = d.where(F.col("striker_id").isNotNull()) \
-                .select("season","match_id","inning_no","striker_id") \
-                .distinct()
-    
-    innings_batted = appears.groupBy("season","striker_id").agg(F.countDistinct("inning_no","match_id").alias("innings_batted"))
-    matches_played = appears.groupBy("season", "striker_id").agg(F.countDistinct("match_id").alias("matches_played"))
-
-    # Per-ball contributions
-    batter_balls = d.where(F.col("striker_id").isNotNull()) \
-            .select(
-            "season", "striker_id",
-            F.col("runs_batter").cast("int").alias("runs_batter"),
-            F.when(is_legal_for_batter(), 1).otherwise(0).alias("bf_inc"),
-            F.when(F.col("runs_batter") == 4, 1).otherwise(0).alias("fours_inc"),
-            F.when(F.col("runs_batter") == 6, 1).otherwise(0).alias("sixes_inc"),
-            # Out when the wicket fell and the player_out is the striker
-            F.when((F.col("wicket_fell") == True) & (F.col("wicket_player_out") == F.col("striker")), 1).otherwise(0).alias("outs_inc"),
+    balls = deliveries.where(F.col("striker_id").isNotNull()).select(
+        "season",
+        "striker_id",
+        F.col("runs_batter").cast("int").alias("runs_batter"),
+        F.when(is_legal_for_batter(), 1).otherwise(0).alias("bf_inc"),
+        F.when(F.col("runs_batter") == 4, 1).otherwise(0).alias("fours_inc"),
+        F.when(F.col("runs_batter") == 6, 1).otherwise(0).alias("sixes_inc"),
+        F.when(
+            (F.col("wicket_fell") == True) & (F.col("wicket_player_out") == F.col("striker")),
+            1,
         )
-    
-    agg = (batter_balls
-         .groupBy("season","striker_id")
-         .agg(
-             F.sum("runs_batter").alias("runs"),
-             F.sum("bf_inc").alias("balls_faced"),
-             F.sum("fours_inc").alias("fours"),
-             F.sum("sixes_inc").alias("sixes"),
-             F.sum("outs_inc").alias("outs")
-        ))
-    
-    # Join appearances
-    gold = (agg
-        .join(innings_batted, ["season","striker_id"], "left")
-        .join(matches_played, ["season","striker_id"], "left")
+        .otherwise(0)
+        .alias("outs_inc"),
+    )
+
+    out = (
+        balls.groupBy("season", "striker_id")
+        .agg(
+            F.sum("runs_batter").alias("runs"),
+            F.sum("bf_inc").alias("balls_faced"),
+            F.sum("fours_inc").alias("fours"),
+            F.sum("sixes_inc").alias("sixes"),
+            F.sum("outs_inc").alias("outs"),
+        )
+        .join(innings_batted, ["season", "striker_id"], "left")
+        .join(matches_played, ["season", "striker_id"], "left")
         .withColumn("average", safe_div(F.col("runs").cast("double"), F.col("outs").cast("double")))
-        .withColumn("strike_rate", batting_strike_rate(F.col("runs").cast("double"), F.col("balls_faced").cast("double")))
-    )
-
-    # Optional: bring readable name from dim_player (if you built it)
-    dim_player_path = root / cfg_silver["tables"]["dim_player"]["target"]
-    try:
-        dim = spark.read.format(fmt).load(str(dim_player_path)).select("player_id", F.col("name").alias("player_name"))
-        gold = gold.join(dim, gold["striker_id"] == dim["player_id"], "left").drop("player_id")
-    except Exception:
-        pass  # if dim_player not present, skip
-
-        # Arrange columns
-    out = gold.select(
-        "season", "striker_id", "player_name",
-        "matches_played", "innings_batted",
-        "runs", "balls_faced", "fours", "sixes", "outs",
-        "average", "strike_rate"
-    )
-
-    print("\n=== gold_batter_season sample ===")
-    out.orderBy(F.desc("runs")).show(20, truncate=False)
-    out.printSchema()
-
-    if write_out and not sample_only:
-        target = root / cfg_silver["gold"]["tables"]["batter_season"]
-        (out
-         .repartition(1, "season")
-         .write.mode("overwrite")
-         .format(cfg_silver["gold"]["format"])
-         .save(str(target))
+        .withColumn(
+            "strike_rate",
+            batting_strike_rate(F.col("runs").cast("double"), F.col("balls_faced").cast("double")),
         )
-        print(f"\n✓ Wrote gold_batter_season to: {target}") 
+    )
 
-    spark.stop()
+    if dim_player is not None:
+        names = dim_player.select("player_id", F.col("name").alias("player_name"))
+        out = out.join(names, out["striker_id"] == names["player_id"], "left").drop("player_id")
+    else:
+        out = out.withColumn("player_name", F.lit(None).cast("string"))
+
+    return out.select(
+        "season",
+        "striker_id",
+        "player_name",
+        "matches_played",
+        "innings_batted",
+        "runs",
+        "balls_faced",
+        "fours",
+        "sixes",
+        "outs",
+        "average",
+        "strike_rate",
+    )
+
+
+def run(
+    context: Optional[PipelineContext] = None,
+    spark: Optional[SparkSession] = None,
+    sample_only: bool = False,
+    write_out: bool = True,
+    preview: bool = False,
+) -> None:
+    context = context or PipelineContext.load()
+    spark, should_stop = require_spark("gold-batter-season", spark)
+    try:
+        deliveries = read_table(spark, context.silver_table_path("deliveries"), context.silver_format)
+        if sample_only:
+            ids = [
+                r["striker_id"]
+                for r in deliveries.select("striker_id").where(F.col("striker_id").isNotNull()).distinct().limit(50).collect()
+            ]
+            deliveries = deliveries.where(F.col("striker_id").isin(ids))
+
+        try:
+            dim_player = read_table(spark, context.silver_table_path("dim_player"), context.silver_format)
+        except Exception:
+            dim_player = None
+
+        out = build_batter_season(deliveries, dim_player)
+        if preview:
+            show_preview(out.orderBy(F.desc("runs")), "gold_batter_season", 20)
+        if write_out:
+            target = write_table(
+                out,
+                context.gold_table_path("batter_season"),
+                context.gold_format,
+                repartition_columns=["season"],
+            )
+            print(f"Wrote gold.batter_season to: {target}")
+    finally:
+        if should_stop:
+            spark.stop()
+
+
+def main(write_out: bool = True, sample_only: bool = False) -> None:
+    run(sample_only=sample_only, write_out=write_out and not sample_only, preview=True)
+
 
 if __name__ == "__main__":
-    # preview first; then set sample_only=False to write
     main(write_out=True, sample_only=False)
+
+
