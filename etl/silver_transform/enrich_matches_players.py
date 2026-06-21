@@ -1,55 +1,72 @@
-from json import load
-from pathlib import Path
-from pyspark.sql import functions as F
-from etl.common import get_spark, load_yml, project_root
-from etl.silver_transform.register_resolver import build_player_maps, make_normalizer, make_udf_player_resolver
+from __future__ import annotations
 
-def main(write_out:bool=True, sample_only:bool = False):
-    root = project_root()
-    cfg_reg = load_yml(str(root / "configs"/ "register_config.yml"))
-    cfg_silver = load_yml(str(root / "configs" / "silver_config.yml"))
-    cfg_bronze= load_yml(str(root / "configs" / "bronze_config.yml"))
-    fmt = cfg_silver["storage"]["format"]
+from typing import Optional
 
-    spark = get_spark("enrich-matches-players")
+from pyspark.sql import DataFrame, SparkSession, functions as F
 
-    ppath = cfg_reg["paths"]["players"]
-    apath = cfg_reg["paths"]["player_aliases"]
-    colsP = cfg_reg["columns"]["players"]
-    colsA = cfg_reg["columns"]["player_aliases"]
+from etl.common import PipelineContext, read_table, require_spark, show_preview, write_table
+from etl.silver_transform.enrich_deliveries_players import normalize_player_name, player_keys
 
-    players = spark.read.option("header",True).csv(str(ppath))
-    aliases = spark.read.option("header",True).csv(str(apath))
 
-    normalizer = make_normalizer(cfg_reg['name_normalization'])
-    player_map = build_player_maps(players,aliases,colsP,colsA,normalizer)
-    b_map = spark.sparkContext.broadcast(player_map)
-    resolve = make_udf_player_resolver(b_map,normalizer)
+def enrich_matches_players(matches: DataFrame, dim_player: DataFrame) -> DataFrame:
+    keys = player_keys(dim_player)
+    return (
+        matches.withColumn("player_of_match_key", normalize_player_name(F.col("player_of_match")))
+        .join(
+            keys.withColumnRenamed("player_id", "player_of_match_id").withColumnRenamed(
+                "player_key", "player_of_match_key"
+            ),
+            "player_of_match_key",
+            "left",
+        )
+        .drop("player_of_match_key")
+    )
 
-    # Read Silver matches
-    mpath = root / cfg_silver["tables"]["matches"]["target"]
-    m = spark.read.format(fmt).load(str(mpath))
 
-    if sample_only:
-        some_matches = [r["match_id"] for r in m.select("match_id").distinct().limit(20).collect()]
-        m = m.filter(F.col("match_id").isin(some_matches))
-    out = m.withColumn("player_of_match_id", resolve(F.col("player_of_match")))
+def run(
+    context: Optional[PipelineContext] = None,
+    spark: Optional[SparkSession] = None,
+    sample_only: bool = False,
+    write_out: bool = True,
+    preview: bool = False,
+) -> None:
+    context = context or PipelineContext.load()
+    spark, should_stop = require_spark("silver-enrich-matches-players", spark)
+    try:
+        dim_player = read_table(spark, context.silver_table_path("dim_player"), context.silver_format)
+        matches = read_table(spark, context.silver_table_path("matches"), context.silver_format)
+        if sample_only:
+            ids = [r["match_id"] for r in matches.select("match_id").distinct().limit(20).collect()]
+            matches = matches.filter(F.col("match_id").isin(ids))
 
-    print("\n=== matches with player_of_match_id (preview) ===")
-    out.select("match_id","season","player_of_match","player_of_match_id").orderBy("season").show(20, truncate=False)
+        out = enrich_matches_players(matches, dim_player)
+        if preview:
+            show_preview(
+                out.select("match_id", "season", "player_of_match", "player_of_match_id"),
+                "matches with player_of_match_id",
+                20,
+            )
+        if write_out:
+            cfg = context.silver["tables"]["matches"]
+            target = write_table(
+                out,
+                context.silver_table_path("matches"),
+                context.silver_format,
+                partition_columns=cfg["partition_columns"],
+                repartition_columns=["season"],
+                atomic=True,
+            )
+            print(f"Updated silver.matches with player_of_match_id at: {target}")
+    finally:
+        if should_stop:
+            spark.stop()
 
-    if write_out and not sample_only:
-        target = root / cfg_silver["tables"]["matches"]["target"]
-        parts  = cfg_silver["tables"]["matches"]["partition_columns"]
-        (out
-         .repartition(1, "season")
-         .write.mode("overwrite")
-         .partitionBy(*parts)
-         .format(fmt)
-         .save(str(target)))
-        print(f"\n✓ Updated Silver matches with player_of_match_id at: {target}")
 
-    spark.stop()
+def main(write_out: bool = True, sample_only: bool = False) -> None:
+    run(sample_only=sample_only, write_out=write_out and not sample_only, preview=True)
+
 
 if __name__ == "__main__":
-    main(write_out=False, sample_only=True)
+    main(write_out=True, sample_only=False)
+
+

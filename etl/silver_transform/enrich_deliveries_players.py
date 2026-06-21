@@ -1,67 +1,104 @@
-from json import load
-from pathlib import Path
-from numpy import partition
-from pyspark.sql import functions as F
-from etl.common import get_spark, load_yml, project_root
-from etl.silver_transform.register_resolver import make_normalizer, build_player_maps, make_udf_player_resolver
+from __future__ import annotations
 
-def main(write_out:bool = True, sample_only:bool = True):
-    root = project_root()
-    cfg_reg = load_yml(str(root / "configs" / "register_config.yml"))
-    cfg_silver= load_yml(str(root / "configs" / "silver_config.yml"))
-    cfg_bronze= load_yml(str(root / "configs" / "bronze_config.yml"))
-    fmt = cfg_silver["storage"]["format"]
+from typing import Optional
 
-    spark = get_spark("silver-enrich-deliveries-players")
+from pyspark.sql import DataFrame, SparkSession, functions as F
 
-    # Load register CSVs
+from etl.common import PipelineContext, read_table, require_spark, show_preview, write_table
 
-    ppath = root / cfg_reg["paths"]["players"]
-    apath = root / cfg_reg["paths"]["player_aliases"]
-    colsP = cfg_reg["columns"]["players"]
-    colsA = cfg_reg["columns"]["player_aliases"]
 
-    players = spark.read.option("header",True).csv(str(ppath))
-    aliases =spark.read.option("header",True).csv(str(apath))
+def normalize_player_name(col):
+    normalized = F.lower(F.trim(col))
+    normalized = F.regexp_replace(normalized, r",+$", "")
+    normalized = F.regexp_replace(normalized, r"\s+", " ")
+    return normalized
 
-    normalizer = make_normalizer(cfg_reg["name_normalization"])
 
-    # Python dict: (unique_name/name/alias normalized) -> player_id
-    player_map = build_player_maps(players, aliases,colsP,colsA,normalizer)
-    b_map = spark.sparkContext.broadcast(player_map)
-    resolve = make_udf_player_resolver(b_map,normalizer)
+def player_keys(dim_player: DataFrame) -> DataFrame:
+    return dim_player.select("player_id", F.explode("all_keys_norm").alias("player_key")).where(
+        F.col("player_key").isNotNull()
+    )
 
-    # Read current Silver deliveries (from Step S1C) OR Bronze deliveries if you prefer
-    src = root / cfg_silver["tables"]["deliveries"]["target"]
-    df = spark.read.format(fmt).load(str(src))
 
-    if sample_only:
-        some_matches = [r["match_id"] for r in df.select("match_id").distinct().limit(20).collect()]
-        df = df.filter(F.col("match_id").isin(some_matches))
-    
-    enriched = (df
-                .withColumn("striker_id", resolve(F.col("striker")))
-                .withColumn("non_striker_id", resolve(F.col("non_striker")))
-                .withColumn("bowler_id", resolve(F.col("bowler")))
-                )
-    print("\n=== deliveries with IDs (preview) ===")
-    enriched.select("match_id","season","inning_no","over_no","ball_in_over",
-             "striker","striker_id","non_striker","non_striker_id","bowler","bowler_id").orderBy("match_id","inning_no","over_no","ball_in_over").show(20, truncate=False)
-    
-    if write_out and not sample_only:
-        # Overwrite Silver deliveries with the new columns (safe; old columns retained)
-        target = root / cfg_silver["tables"]["deliveries"]["target"]
-        parts  = cfg_silver["tables"]["deliveries"]["partition_columns"]
-        (enriched
-         .repartition(1,"season")
-         .write.mode("overwrite")
-         .partitionBy(*parts)
-         .format(fmt)
-         .save(str(target))
-         )
-        print(f"\n✓ Updated Silver deliveries with player IDs at: {target}")
-    spark.stop()
+def enrich_deliveries_players(deliveries: DataFrame, dim_player: DataFrame) -> DataFrame:
+    keys = player_keys(dim_player)
+    return (
+        deliveries.withColumn("striker_key", normalize_player_name(F.col("striker")))
+        .withColumn("non_striker_key", normalize_player_name(F.col("non_striker")))
+        .withColumn("bowler_key", normalize_player_name(F.col("bowler")))
+        .join(
+            keys.withColumnRenamed("player_id", "striker_id").withColumnRenamed("player_key", "striker_key"),
+            "striker_key",
+            "left",
+        )
+        .join(
+            keys.withColumnRenamed("player_id", "non_striker_id").withColumnRenamed(
+                "player_key", "non_striker_key"
+            ),
+            "non_striker_key",
+            "left",
+        )
+        .join(
+            keys.withColumnRenamed("player_id", "bowler_id").withColumnRenamed("player_key", "bowler_key"),
+            "bowler_key",
+            "left",
+        )
+        .drop("striker_key", "non_striker_key", "bowler_key")
+    )
+
+
+def run(
+    context: Optional[PipelineContext] = None,
+    spark: Optional[SparkSession] = None,
+    sample_only: bool = False,
+    write_out: bool = True,
+    preview: bool = False,
+) -> None:
+    context = context or PipelineContext.load()
+    spark, should_stop = require_spark("silver-enrich-deliveries-players", spark)
+    try:
+        dim_player = read_table(spark, context.silver_table_path("dim_player"), context.silver_format)
+        deliveries = read_table(spark, context.silver_table_path("deliveries"), context.silver_format)
+        if sample_only:
+            ids = [r["match_id"] for r in deliveries.select("match_id").distinct().limit(20).collect()]
+            deliveries = deliveries.filter(F.col("match_id").isin(ids))
+
+        out = enrich_deliveries_players(deliveries, dim_player)
+        if preview:
+            show_preview(
+                out.select(
+                    "match_id",
+                    "striker",
+                    "striker_id",
+                    "non_striker",
+                    "non_striker_id",
+                    "bowler",
+                    "bowler_id",
+                ),
+                "deliveries with player IDs",
+                20,
+            )
+        if write_out:
+            cfg = context.silver["tables"]["deliveries"]
+            target = write_table(
+                out,
+                context.silver_table_path("deliveries"),
+                context.silver_format,
+                partition_columns=cfg["partition_columns"],
+                repartition_columns=["season"],
+                atomic=True,
+            )
+            print(f"Updated silver.deliveries with player IDs at: {target}")
+    finally:
+        if should_stop:
+            spark.stop()
+
+
+def main(write_out: bool = True, sample_only: bool = False) -> None:
+    run(sample_only=sample_only, write_out=write_out and not sample_only, preview=True)
+
 
 if __name__ == "__main__":
-    # First run preview; then set sample_only=False to write
     main(write_out=True, sample_only=False)
+
+

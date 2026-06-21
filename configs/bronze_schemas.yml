@@ -10,7 +10,7 @@ schemas:
       - { name: match_id,            type: string,  nullable: false }
 
       # Common match attributes
-      - { name: season,              type: integer, nullable: true }
+      - { name: season,              type: string,  nullable: true }
       - { name: competition,         type: string,  nullable: true }
       - { name: match_type,          type: string,  nullable: true }     # e.g., T20
       - { name: gender,              type: string,  nullable: true }
@@ -50,7 +50,7 @@ schemas:
       - { name: match_id,            type: string,  nullable: false }
 
       # Partition key
-      - { name: season,              type: integer, nullable: true }
+      - { name: season,              type: string,  nullable: true }
 
       # Innings / over / ball
       - { name: inning_no,           type: integer, nullable: true }
@@ -91,7 +91,7 @@ schemas:
     description: Optional: inning-level summary for quick checks.
     columns:
       - { name: match_id,            type: string,  nullable: false }
-      - { name: season,              type: integer, nullable: true }
+      - { name: season,              type: string,  nullable: true }
       - { name: inning_no,           type: integer, nullable: true }
       - { name: batting_team,        type: string,  nullable: true }
       - { name: runs_total,          type: integer, nullable: true }
