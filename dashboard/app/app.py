@@ -60,7 +60,7 @@ def main() -> None:
     configure_page()
     with st.sidebar:
         st.header("Cricket Pipeline")
-        page_name = st.radio("View", list(PAGES), label_visibility="collapsed")
+        page_name = st.radio("View", list(PAGES), label_visibility="collapsed", key="main_navigation")
         st.divider()
         render_shutdown_control()
     PAGES[page_name]()
