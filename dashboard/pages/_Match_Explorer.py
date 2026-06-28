@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from dashboard.components.charts import bar_chart
@@ -36,17 +37,17 @@ def render() -> None:
     )
 
 
-def _wins_by_team(matches):
+def _wins_by_team(matches: pd.DataFrame) -> pd.DataFrame:
     if matches.empty or "winner" not in matches.columns:
-        return matches
+        return pd.DataFrame(columns=["winner", "matches"])
     winners = matches["winner"].value_counts().reset_index()
     winners.columns = ["winner", "matches"]
     return winners
 
 
-def _chase_outcomes(matches):
+def _chase_outcomes(matches: pd.DataFrame) -> pd.DataFrame:
     if matches.empty or "chase_success" not in matches.columns:
-        return matches
+        return pd.DataFrame(columns=["chase_success", "matches"])
     chase = matches["chase_success"].value_counts(dropna=False).reset_index()
     chase.columns = ["chase_success", "matches"]
     chase["chase_success"] = chase["chase_success"].map(
@@ -55,7 +56,7 @@ def _chase_outcomes(matches):
     return chase
 
 
-def _sort_matches(matches):
+def _sort_matches(matches: pd.DataFrame) -> pd.DataFrame:
     if matches.empty or "match_start_dt" not in matches.columns:
         return matches
     return matches.sort_values("match_start_dt", ascending=False)
